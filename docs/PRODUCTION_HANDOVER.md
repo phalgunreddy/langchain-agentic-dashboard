@@ -1,226 +1,85 @@
-# Production Handover - Energy Data Chatbot
+# 📦 Production Handover & Integration Guide
 
-## 📦 What This Is
+## 🎯 Purpose
+This document is designed for **Web Developers** who need to integrate the Energy Data RAG Backend into a production website or dashboard.
 
-A chatbot system that answers questions about energy consumption data. Built for integration into your website.
+## 🏗️ Architecture Overview
+The system is currently a **Python-based Local Application**. To integrate it into a web app (e.g., React, Next.js, Vue), you will need to expose the Python core as an API.
 
----
+### Current Stack
+*   **Core Logic:** Python (`1_core/`)
+*   **Database:** SQLite (`4_data/data_prototype/metadata.db`) + FAISS (`4_data/data_prototype/indexes/`)
+*   **LLM:** Local Ollama instance
 
-## 🏗️ Core Components (For Web Developers)
+## 🔌 Integration Strategy (Recommended)
 
-### Essential Backend Files
+To connect this to a web frontend, we recommend wrapping the core logic in a **FastAPI** or **Flask** server.
 
-#### 1. **Data Processing**
-- `smart_preprocessor.py` - Extracts clean data from Excel files
-- `ingest_smart.py` - Script to ingest new data
-- `ingestion_pipeline.py` - Low-level file processing (legacy, can simplify)
+### 1. API Endpoints Needed
+You should create a simple Python API that exposes the following endpoints:
 
-#### 2. **AI/LLM Components**
-- `llm_reasoning.py` - Handles query answering with LLM
-- `embedding_store.py` - Stores and searches data using embeddings
-- `config.py` - Configuration (model names, paths)
+#### `POST /query`
+*   **Input:** `{"question": "How much energy did we use in July?"}`
+*   **Logic:**
+    1.  Import `LLMReasoning` and `EmbeddingStore` from `1_core`.
+    2.  Call `llm_reasoning.answer_question(question)`.
+*   **Output:** `{"answer": "In July, the plant used...", "sources": [...]}`
 
-#### 3. **Supporting Modules**
-- `router.py` - Routes queries to appropriate handlers
-- `agent_tools.py` - Numeric calculations
-- `utils.py` - Logging utilities
-- `user_profiles.py` - User management (optional)
+#### `POST /reset`
+*   **Input:** `{}`
+*   **Logic:** Clear any server-side caching.
+*   **Output:** `{"status": "success"}`
 
-#### 4. **Data Storage**
-- `data_prototype/` - Contains all databases and indexes
-  - `metadata.db` - Document metadata
-  - `indexes/` - FAISS vector embeddings
-  - `user_profiles.db` - User data (optional)
-
-#### 5. **Testing Interface**
-- `streamlit_app.py` - Demo/testing UI (keep for testing)
-
----
-
-## 🔌 Integration Guide for Web Developers
-
-### Option 1: REST API (Recommended)
-
-Create a simple Flask/FastAPI wrapper:
+### 2. Python Interface Code
+Here is how you programmatically interact with the backend from your API server:
 
 ```python
-from fastapi import FastAPI
-from llm_reasoning import LLMReasoning
-from embedding_store import EmbeddingStore
+import sys
+import os
 
-app = FastAPI()
-llm = LLMReasoning()
-store = EmbeddingStore()
+# Add 1_core to path
+sys.path.append(os.path.join(os.path.dirname(__file__), '1_core'))
 
-@app.post("/api/query")
-def answer_query(query: str):
-    # Search for relevant data
-    results = store.search(query, k=5)
-    
-    # Get LLM answer
-    answer = llm.perform_reasoning(query, results)
-    
-    return {"answer": answer["answer"]}
-```
-
-### Option 2: Direct Integration
-
-Import and use the modules directly in your web framework:
-
-```python
 from embedding_store import EmbeddingStore
 from llm_reasoning import LLMReasoning
 
-# Initialize once
+# Initialize (do this once on server startup)
 embedding_store = EmbeddingStore()
 llm_reasoning = LLMReasoning()
 
-# For each user query:
-def handle_user_query(user_question):
-    # 1. Search for relevant data
-    search_results = embedding_store.search(user_question, k=5)
+def process_user_question(user_question):
+    """
+    Call this function when your API receives a request.
+    """
+    # 1. Search Vector DB
+    # Note: The system automatically handles global context injection internally
+    results = embedding_store.search(user_question, k=5)
     
-    # 2. Get LLM answer
-    response = llm_reasoning.perform_reasoning(
-        query=user_question,
-        context=search_results
-    )
+    # 2. Generate Answer
+    answer = llm_reasoning.get_answer(user_question, results)
     
-    return response["answer"]
+    return answer
 ```
 
----
+## ⚠️ Critical Integration Notes
 
-## 📝 Adding New Data Files
+### 1. Data Persistence
+*   The system relies on `metadata.db` and `faiss.index` existing in `4_data/data_prototype/`.
+*   **Do not delete these files** during deployment. They contain the ingested knowledge base.
+*   If you deploy to a container (Docker), ensure `4_data/` is mounted as a persistent volume.
 
-When you receive a new Excel file:
+### 2. LLM Dependency
+*   The system requires **Ollama** to be running on the server (`localhost:11434`).
+*   If deploying to cloud (AWS/GCP), you might need to swap the local Ollama calls in `1_core/llm_reasoning.py` for an API call to OpenAI/Anthropic or a hosted LLM service if you cannot run Ollama.
 
-1. **Analyze the structure** (5 minutes):
-   - What sheets contain data?
-   - What are the column names?
+### 3. "Hard Reset" Feature
+*   The current UI has a "Hard Reset" button to clear history. In a stateless API, you don't need to worry about clearing history *unless* you implement a conversation memory in your API. The RAG core itself is stateless per request.
 
-2. **Update `smart_preprocessor.py`**:
-   - Adjust `monthly_sheets` list if needed
-   - Modify extraction logic if structure is different
-
-3. **Run ingestion**:
-   ```bash
-   python ingest_smart.py
-   ```
-
-4. **Done!** Chatbot now knows the new data.
-
----
-
-## 🔧 Configuration
-
-Edit `config.py`:
-
-```python
-# Model selection
-LLM_REASON_MODEL = "llama3.2:latest"  # Change to your preferred model
-EMBED_MODEL = "nomic-embed-text"      # Embedding model
-
-# Ollama server
-OLLAMA_BASE_URL = "http://localhost:11434"  # Change if Ollama runs elsewhere
+## 📂 Folder Structure for Deployment
 ```
-
----
-
-## 🧪 Testing
-
-Run Streamlit for testing:
-```bash
-streamlit run streamlit_app.py
+/backend
+  ├── main.py              # Your new FastAPI/Flask server
+  ├── 1_core/              # COPY THIS FOLDER (Logic)
+  ├── 4_data/              # COPY THIS FOLDER (Database)
+  └── Requirements.txt     # Python dependencies
 ```
-
-Access at: http://localhost:8501
-
----
-
-## 📊 Current Dataset
-
-- **File**: Energy Consumption Daily Report MHS Ele - Copy.xlsx
-- **43 feeders** monitored
-- **10 months** of data (Sept 2023 - July 2024)
-- **18.2 million KWH** total consumption
-
----
-
-## 🚀 Deployment Requirements
-
-### Software Dependencies
-```
-pandas
-numpy
-faiss-cpu (or faiss-gpu for production)
-requests
-streamlit (testing only)
-sqlite3 (built-in Python)
-```
-
-Install with:
-```bash
-pip install -r Requirements.txt
-```
-
-### External Service
-- **Ollama** must be running with models:
-  - `llama3.2:latest` (2GB)
-  - `nomic-embed-text` (274MB)
-
-Start Ollama:
-```bash
-ollama serve
-```
-
----
-
-## 📁 What to Deploy
-
-**Minimum files needed:**
-```
-config.py
-embedding_store.py
-llm_reasoning.py
-smart_preprocessor.py
-utils.py
-data_prototype/          # Entire folder
-Requirements.txt
-```
-
-**Optional** (depending on integration):
-- `router.py`
-- `agent_tools.py`
-- `user_profiles.py`
-- `streamlit_app.py` (testing only)
-
----
-
-## 💡 Performance Notes
-
-- **Query response**: 2-4 seconds
-- **Data ingestion**: ~5 seconds for 46 Excel sheets
-- **Memory usage**: ~500MB (with FAISS index loaded)
-
----
-
-## 🐛 Common Issues
-
-**"LLM Error" or timeout:**
-- Check Ollama is running: `ollama list`
-- Model might be too slow - use llama3.2 instead of deepseek-r1
-
-**Empty search results:**
-- Run `python ingest_smart.py` to load data
-
-**Module not found:**
-- Install: `pip install -r Requirements.txt`
-
----
-
-## 📞 Support
-
-For questions about the codebase, refer to:
-- `walkthrough.md` - Complete system explanation
-- `preprocessing_analysis.md` - Data structure details (if kept)
