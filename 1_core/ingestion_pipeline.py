@@ -433,6 +433,10 @@ def _process_dataframe(df: pd.DataFrame, file_id: str, file_name: str, sheet_nam
         for col_name, col_type in column_types.items():
             if col_type == "number":
                 val = row.get(col_name)
+                # Check if val is a Series or scalar
+                if isinstance(val, pd.Series):
+                    val = val.iloc[0] if not val.empty else np.nan
+                
                 if pd.notna(val):
                     try:
                         numeric_fields[col_name] = float(val)
@@ -713,7 +717,68 @@ def _process_other_text_file(file_path: str, file_id: str, file_name: str) -> Li
         logger.error(f"Error processing text file {file_name}: {e}")
         return []
 
-def ingest_file(file_path: str, file_id: str = None, row_limit: Optional[int] = None) -> List[Document]:
+def _process_jsw_energy_report(file_path: str, sheet_name: str, file_context: str = "") -> pd.DataFrame:
+    """
+    Specialized processor for JSW Energy Reports.
+    Handles complex headers, date columns, and merges user context.
+    """
+    try:
+        # Read the sheet with header at row 4 (index 3) based on inspection
+        # The inspection showed headers like "Feeder", "SWB No", dates at row 4
+        df = pd.read_excel(file_path, sheet_name=sheet_name, header=3)
+        
+        # Clean column names
+        df.columns = [str(col).strip() for col in df.columns]
+        
+        # Identify key columns
+        feeder_col = next((col for col in df.columns if 'Feeder' in col or 'Panel' in col), None)
+        swb_col = next((col for col in df.columns if 'SWB' in col), None)
+        
+        if not feeder_col:
+            # Fallback: try reading with header at row 5 (index 4)
+            df = pd.read_excel(file_path, sheet_name=sheet_name, header=4)
+            df.columns = [str(col).strip() for col in df.columns]
+            feeder_col = next((col for col in df.columns if 'Feeder' in col or 'Panel' in col), None)
+        
+        if not feeder_col:
+            logger.warning(f"Could not identify Feeder column in {sheet_name}")
+            return _smart_excel_processing(file_path, sheet_name)
+
+        # Filter out rows where Feeder is NaN or "Total"
+        df = df[df[feeder_col].notna()]
+        df = df[~df[feeder_col].astype(str).str.contains('Total', case=False, na=False)]
+        
+        # Normalize columns
+        normalized_columns = {}
+        for col in df.columns:
+            if col == feeder_col:
+                normalized_columns[col] = 'feeder'
+            elif swb_col and col == swb_col:
+                normalized_columns[col] = 'swb_no'
+            elif 'Unnamed' in col:
+                continue # Skip unnamed columns unless they are data
+            else:
+                # Try to parse date columns
+                try:
+                    # Check if column is a date-like string or number
+                    # The inspection showed dates like "30-06-2024" or floats
+                    normalized_columns[col] = str(col)
+                except:
+                    normalized_columns[col] = _normalize_header(col)
+        
+        df.rename(columns=normalized_columns, inplace=True)
+        
+        # Add context column if provided
+        if file_context:
+            df['file_context'] = file_context
+            
+        return df
+
+    except Exception as e:
+        logger.error(f"JSW Report processing failed for {sheet_name}: {e}")
+        return _smart_excel_processing(file_path, sheet_name)
+
+def ingest_file(file_path: str, file_id: str = None, row_limit: Optional[int] = None, file_context: str = "") -> List[Document]:
     """
     Ingests a single file, processes it based on type, and returns a list of Documents.
     """
@@ -731,10 +796,19 @@ def ingest_file(file_path: str, file_id: str = None, row_limit: Optional[int] = 
                 df = pd.read_csv(file_path)
             elif file_path.endswith('.xlsx'):
                 xl = pd.ExcelFile(file_path)
-                # Process only the first two sheets as requested
-                for sheet_name in xl.sheet_names[:2]: # Limit to first 2 sheets
-                    df_sheet = _smart_excel_processing(file_path, sheet_name, row_limit)
+                # Process ALL sheets
+                for sheet_name in xl.sheet_names:
+                    # Check if it looks like a JSW report (heuristic)
+                    is_jsw_report = "Energy" in file_name or "Report" in file_name
+                    
+                    if is_jsw_report:
+                        df_sheet = _process_jsw_energy_report(file_path, sheet_name, file_context)
+                    else:
+                        df_sheet = _smart_excel_processing(file_path, sheet_name, row_limit)
+                    
                     if df_sheet is not None and not df_sheet.empty:
+                        # Add sheet name to context if not already present
+                        sheet_context = f"Sheet: {sheet_name}. {file_context}"
                         all_documents.extend(_process_dataframe(df_sheet, file_id, file_name, sheet_name=sheet_name))
             
             if df is not None: # For CSVs that are processed directly
@@ -753,6 +827,9 @@ def ingest_file(file_path: str, file_id: str = None, row_limit: Optional[int] = 
         elif file_path.endswith('.txt'):
             with open(file_path, 'r', encoding='utf-8') as f:
                 text_content = f.read()
+            # Prepend context to text content
+            if file_context:
+                text_content = f"Context: {file_context}\n\n{text_content}"
             all_documents.extend(_chunk_text(text_content, file_id, file_name))
             log_process_completion(f"Ingestion of TXT: {file_name}", details="Processed as textual data")
 

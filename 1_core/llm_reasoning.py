@@ -17,27 +17,33 @@ class LLMReasoning:
         logger.info(f"LLMReasoning initialized with reasoning model: {self.reasoning_model} and explanation model: {self.explanation_model}")
 
     def _call_ollama_llm(self, prompt: str, model: str, temperature: float = 0.2) -> str:
-        """Helper to call Ollama LLM."""
-        try:
-            response = requests.post(
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": temperature, "num_gpu": 1}
-                },
-                timeout=180 # Longer timeout for complex LLM tasks
-            )
-            response.raise_for_status()
-            response_data = response.json()
-            return response_data.get("response", "").strip()
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error calling Ollama model {model} for reasoning/explanation: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Ollama error response status: {e.response.status_code}")
-                logger.error(f"Ollama error response body: {e.response.text}")
-            return f"LLM Error: Could not get response from LLM model {model}."
+        """Helper to call Ollama LLM with retry logic."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    f"{OLLAMA_BASE_URL}/api/generate",
+                    json={
+                        "model": model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"temperature": temperature, "num_gpu": 1}
+                    },
+                    timeout=180 # Longer timeout for complex LLM tasks
+                )
+                response.raise_for_status()
+                response_data = response.json()
+                return response_data.get("response", "").strip()
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} failed for model {model}: {e}")
+                if attempt == max_retries - 1:
+                    logger.error(f"Error calling Ollama model {model} after {max_retries} attempts: {e}")
+                    if hasattr(e, 'response') and e.response is not None:
+                        logger.error(f"Ollama error response status: {e.response.status_code}")
+                        logger.error(f"Ollama error response body: {e.response.text}")
+                    return f"LLM Error: Could not get response from LLM model {model} after multiple attempts. Please ensure Ollama is running."
+                import time
+                time.sleep(2) # Wait before retrying
 
     def perform_reasoning(self, query: str, context: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
         """
@@ -50,32 +56,35 @@ class LLMReasoning:
             for entry in chat_history[-3:]: # Include last 3 turns of conversation
                 history_str += f"\nUser: {entry['query']}\nMendy: {entry['response']}"
 
-        prompt = f"""
-        You are Mendy, an advanced industrial AI assistant capable of complex reasoning and analysis.
-        Your goal is to provide helpful, human-like, and concise responses.
-        Analyze the provided context documents and previous conversation to answer the user's query.
-        Synthesize information from multiple documents if necessary. Provide a detailed, well-reasoned answer.
-        Always maintain a friendly and professional tone. If you cannot find a direct answer, try to guide the user.
-        Clearly state the provenance (Document IDs) for the information you use.
+        prompt = f"""You are a helpful energy data analyst. Answer questions clearly, informatively, and comprehensively.
 
-        Previous Conversation (if any):
-        {history_str}
+Your answers should be:
+1. **Direct** - Start with the answer.
+2. **Detailed** - Provide specific numbers, comparisons, and insights. Don't be too brief.
+3. **Conversational** - Like explaining to a colleague.
+4. **Accurate** - Use the exact numbers from the data.
+5. **Clean** - **NEVER** repeat the raw "Context data" or "Document ID" blocks in your output. Only use the information to form your answer.
 
-        Query: "{query}"
+Example good answer:
+Q: "What is the top feeder in July 2024?"
+A: "The top consumer in July 2024 was **I/C Panel (Location: I/C-1)** with 20,585,392 KWH total consumption. This feeder consistently shows the highest readings across the monitoring period, indicating it is the primary power input for the facility."
 
-        Context Documents:
-        {context_str}
+Context data:
+{context_str}
 
-        Reasoned Answer from Mendy:
-        """
+Question: "{query}"
+
+Answer (be clear, helpful, and DO NOT repeat context):
+"""
         logger.info(f"Performing reasoning for query (first 50 chars): {query[:50]}...")
-        reasoned_answer = self._call_ollama_llm(prompt, self.reasoning_model)
+        reasoned_answer = self._call_ollama_llm(prompt, self.reasoning_model, temperature=0.0)
 
         # Extract provenance from the LLM's response if possible, or infer from context
         provenance_docs = []
         for doc in context:
-            if doc.get('doc_id') in reasoned_answer: # Simple check for now
-                provenance_docs.append(doc.get('doc_id'))
+            doc_id = doc.get('doc_id')
+            if doc_id and doc_id in reasoned_answer: # Check if doc_id exists and is in answer
+                provenance_docs.append(doc_id)
         
         if not provenance_docs:
             # Fallback: if LLM didn't explicitly mention, include all context doc_ids as potential provenance
@@ -120,8 +129,9 @@ class LLMReasoning:
         # Extract provenance
         provenance_docs = []
         for doc in context:
-            if doc.get('doc_id') in explanation: # Simple check for now
-                provenance_docs.append(doc.get('doc_id'))
+            doc_id = doc.get('doc_id')
+            if doc_id and doc_id in explanation: # Check if doc_id exists and is in explanation
+                provenance_docs.append(doc_id)
 
         if not provenance_docs:
             provenance_docs = [d.get('doc_id') for d in context if d.get('doc_id')]

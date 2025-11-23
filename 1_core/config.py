@@ -2,8 +2,11 @@
 
 import os
 
+# Get the root directory (parent of 1_core)
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # --- Paths ---
-DATA_DIR = "data_prototype"
+DATA_DIR = os.path.join(ROOT_DIR, "4_data", "data_prototype")
 INDEX_DIR = os.path.join(DATA_DIR, "indexes")
 METADATA_DB_PATH = os.path.join(DATA_DIR, "metadata.db")
 
@@ -12,9 +15,9 @@ os.makedirs(INDEX_DIR, exist_ok=True)
 
 # --- Ollama Models ---
 EMBED_MODEL = "nomic-embed-text"
-SLM_PARSE_MODEL = "llama3.2:3b"
-LLM_REASON_MODEL = "deepseek-v3.1:671b-cloud"
-LLM_EXPLAIN_MODEL = "gpt-oss:120b-cloud"
+SLM_PARSE_MODEL = "llama3.2:latest"  # Fast parser
+LLM_REASON_MODEL = "llama3.2:latest"  # Fast model - preprocessed data is clean
+LLM_EXPLAIN_MODEL = "llama3.2:latest"  # Fast answers
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 

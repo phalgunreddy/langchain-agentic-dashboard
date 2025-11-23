@@ -41,7 +41,8 @@ class UserProfileManager:
     Manages user profiles, preferences, and personalization features.
     """
     
-    def __init__(self, db_path: str = "user_profiles.db"):
+    def __init__(self, db_path: str = "data_prototype/user_profiles.db"):
+        print(f"DEBUG: UserProfileManager initialized with db_path: {db_path}")
         self.db_path = db_path
         self._init_database()
     
@@ -65,6 +66,19 @@ class UserProfileManager:
                 custom_filters TEXT,
                 dashboard_layout TEXT,
                 notification_settings TEXT
+            )
+        """)
+        
+        # Create query_history table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS query_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                query TEXT,
+                response TEXT,
+                timestamp TEXT,
+                metadata TEXT,
+                FOREIGN KEY (user_id) REFERENCES user_profiles (user_id)
             )
         """)
         
